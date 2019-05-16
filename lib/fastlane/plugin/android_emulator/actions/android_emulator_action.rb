@@ -3,30 +3,43 @@ require_relative '../helper/android_emulator_helper'
 
 module Fastlane
   module Actions
+    module SharedValues
+    end
+
     class AndroidEmulatorAction < Action
       def self.run(params)
-        sdk_dir = params[:sdk_dir]
-        port = params[:port]
+        Actions::AndroidSdkLocateAction.run(params)
+        sdk_dir = Actions.lane_context[SharedValues::ANDROID_SDK_DIR]
         adb = "#{sdk_dir}/platform-tools/adb"
 
         UI.message("Stopping emulator")
-        system("#{adb} emu kill > /dev/null 2>&1 &")
-        sleep(2)
+        system("#{adb} emu kill > /dev/null 2>&1")
 
-        UI.message("Creating new emulator")
-        FastlaneCore::CommandExecutor.execute(
-          command: "#{sdk_dir}/tools/bin/avdmanager create avd -n '#{params[:name]}' -f -k '#{params[:package]}' -d 'Nexus 5'",
-          print_all: true,
-          print_command: false
-        )
+        avd_available = false
+        config_file = "#{Dir.home}/.android/avd/#{params[:name]}.avd/config.ini"
+        if File.exists?(config_file)
+          avd_image = File.open(config_file).grep(/^image\.sysdir\.1=/).first
+          avd_available = avd_image.include?(params[:package].gsub(';', '/'))
+        end
 
-        UI.message("Override configuration")
-        open("#{Dir.home}/.android/avd/#{params[:name]}.avd/config.ini", 'a') { |f|
-          f << "hw.gpu.mode=auto\n"
-          f << "hw.gpu.enabled=yes\n"
-          f << "skin.dynamic=yes\n"
-          f << "skin.name=1080x1920\n"
-        }
+        if params[:retain_previous_avd] && avd_available
+          UI.message("Using existing #{params[:name]} emulator")
+        else
+          UI.message("Creating new emulator")
+          FastlaneCore::CommandExecutor.execute(
+            command: "#{sdk_dir}/tools/bin/avdmanager create avd -n '#{params[:name]}' -f -k '#{params[:package]}' -d '#{params[:device_definition]}'",
+            print_all: true,
+            print_command: false
+          )
+
+          UI.message("Override configuration")
+          open(config_file, 'a') { |f|
+            f << "hw.gpu.mode=auto\n"
+            f << "hw.gpu.enabled=yes\n"
+            f << "skin.dynamic=yes\n"
+            f << "skin.name=1080x1920\n"
+          }
+        end
 
         # Verify HAXM installed on mac
         if FastlaneCore::Helper.mac?
@@ -36,10 +49,15 @@ module Fastlane
         end
 
         UI.message("Starting emulator")
-        system("LC_NUMERIC=C; #{sdk_dir}/tools/emulator @#{params[:name]} -port #{port} > /dev/null 2>&1 &")
-        sh("#{adb} -e wait-for-device")
+        system("LC_NUMERIC=C; #{sdk_dir}/tools/emulator @#{params[:name]} > /dev/null 2>&1 &")
 
-        until Actions.sh("#{adb} -e shell getprop init.svc.bootanim", log: false).include? "stopped" do
+        error_callback = proc do |error|
+          UI.error("Emulator may be having issues... or could have started too quickly!")
+        end
+        Actions.sh("#{adb} -e wait-for-device", error_callback: error_callback)
+
+        until Actions.sh("#{adb} -e shell getprop init.svc.bootanim", log: false,
+                         error_callback: error_callback).include? "stopped" do
           sleep(5)
         end
 
@@ -53,8 +71,6 @@ module Fastlane
           sh("#{adb} -e shell settings put global sysui_demo_allowed 1")
           sh("#{adb} -e shell am broadcast -a com.android.systemui.demo -e command clock -e hhmm 0700")
         end
-
-        ENV['SCREENGRAB_SPECIFIC_DEVICE'] = "emulator-#{port}"
       end
 
       def self.description
@@ -81,24 +97,24 @@ module Fastlane
           FastlaneCore::ConfigItem.new(key: :sdk_dir,
                                        env_name: "ANDROID_SDK_DIR",
                                        description: "Path to the Android SDK DIR",
-                                       default_value: ENV['ANDROID_HOME'] || ENV['ANDROID_SDK_ROOT'] || ENV['ANDROID_SDK'],
+                                       default_value: Actions.lane_context[SharedValues::ANDROID_SDK_DIR],
                                        optional: false,
                                        verify_block: proc do |value|
                                          UI.user_error!("No ANDROID_SDK_DIR given, pass using `sdk_dir: 'sdk_dir'`") unless value and !value.empty?
                                        end),
           FastlaneCore::ConfigItem.new(key: :package,
-                                      env_name: "AVD_PACKAGE",
-                                      description: "The selected system image of the emulator",
-                                      optional: false),
+                                       env_name: "AVD_PACKAGE",
+                                       description: "The selected system image of the emulator",
+                                       optional: false),
           FastlaneCore::ConfigItem.new(key: :name,
                                        env_name: "AVD_NAME",
                                        description: "Name of the AVD",
                                        default_value: "fastlane",
                                        optional: false),
-          FastlaneCore::ConfigItem.new(key: :port,
-                                       env_name: "AVD_PORT",
-                                       description: "Port of the emulator",
-                                       default_value: "5554",
+          FastlaneCore::ConfigItem.new(key: :device_definition,
+                                       env_name: "AVD_DEVICE_DEFINITION",
+                                       description: "Device definition for the AVD",
+                                       default_value: "Nexus 5",
                                        optional: false),
           FastlaneCore::ConfigItem.new(key: :location,
                                        env_name: "AVD_LOCATION",
@@ -107,6 +123,11 @@ module Fastlane
           FastlaneCore::ConfigItem.new(key: :demo_mode,
                                        env_name: "AVD_DEMO_MODE",
                                        description: "Set the emulator in demo mode",
+                                       is_string: false,
+                                       default_value: true),
+          FastlaneCore::ConfigItem.new(key: :retain_previous_avd,
+                                       env_name: "AVD_RETAIN_PREVIOUS",
+                                       description: "Retain previously created AVD (use snapshot)",
                                        is_string: false,
                                        default_value: true)
         ]
