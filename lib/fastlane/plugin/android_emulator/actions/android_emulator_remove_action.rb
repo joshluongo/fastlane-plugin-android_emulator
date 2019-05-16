@@ -23,7 +23,7 @@ module Fastlane
       #####################################################
 
       def self.description
-        "Stop an Android Emulator"
+        "Remove an Android Emulator"
       end
 
       def self.available_options
