@@ -37,7 +37,6 @@ module Fastlane
             f << "hw.gpu.mode=auto\n"
             f << "hw.gpu.enabled=yes\n"
             f << "skin.dynamic=yes\n"
-            f << "skin.name=1080x1920\n"
           }
         end
 
